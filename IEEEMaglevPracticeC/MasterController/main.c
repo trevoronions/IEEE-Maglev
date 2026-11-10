@@ -11,6 +11,7 @@ extern I2C_HandleTypeDef hi2c1;
 #define SENSORS_PER_BOARD  4
 
 // I2C commands
+// commands are set in memory and used with HAL to execute the command
 #define MAGNET_CONTROL     0x01
 #define SENSOR_REQUEST     0x02
 
@@ -20,14 +21,18 @@ const uint8_t BOARD_ADDRESSES[NUM_BOARDS] = {
 };
 
 // Magnet command variables
+// ? target board and target magnet are used with sensor value array to select magnets
+// magnet state is either on or off
 volatile uint8_t target_board = 0;
 volatile uint8_t target_magnet = 0;
 volatile uint8_t magnet_state = 0;
 
 // Interrupt flag
+// ? signals when any magnet needs to change states
 volatile uint8_t magnet_command_pending = 0;
 
 // Sensor data storage
+// creates a 2 dimentional array for every configured board and its magnets
 uint16_t sensor_values[NUM_BOARDS][SENSORS_PER_BOARD];
 
 // Function prototypes
@@ -53,12 +58,15 @@ int main(void)
     MX_GPIO_Init();
     MX_I2C1_Init();
 
+    // main loop
+    // majority of time consitst of checking for interrupts and reading sensors
     while (1)
     {
         // ---------------------------------
         // LOOP 1: INTERRUPT-TRIGGERED MAGNET
         // ---------------------------------
 
+        // if the interupt handler detected an interupt from slave board
         if (magnet_command_pending)
         {
             Process_Magnet_Command();
@@ -82,6 +90,7 @@ HAL_StatusTypeDef Set_Magnet(uint8_t board,
                              uint8_t state)
 {
     // Validate inputs
+    // if the queried magnet falls outside of existing magnets
     if (board >= NUM_BOARDS ||
         magnet >= MAGNETS_PER_BOARD ||
         state > 1)
@@ -97,9 +106,18 @@ HAL_StatusTypeDef Set_Magnet(uint8_t board,
     };
 
     // Select board address
+    // ? shifts 7 bit address to make it 8 bits
     uint16_t address = BOARD_ADDRESSES[board] << 1;
 
     // Transmit command
+    // parameters: 
+    //              pointer to a hal_i2c_handle_t
+    //              targeted board
+    //              transmited message
+    //              size of transmited messge
+    //              wait 20 milliseconds
+    // returns:
+    //              status of process
     return HAL_I2C_Master_Transmit(
         &hi2c1,
         address,
@@ -121,7 +139,9 @@ void Process_Magnet_Command(void)
     uint8_t state;
 
     // Copy command atomically
+    // ? primask is supposedly one bit, don't know why its 32 bits here
     uint32_t primask = __get_PRIMASK();
+    // dissable interupts
     __disable_irq();
 
     board = target_board;
@@ -130,6 +150,7 @@ void Process_Magnet_Command(void)
 
     magnet_command_pending = 0;
 
+    // resumes interupt handling
     __set_PRIMASK(primask);
 
     // Send magnet command
@@ -154,14 +175,24 @@ HAL_StatusTypeDef Read_Sensors(uint8_t board)
         return HAL_ERROR;
     }
 
+    // ? turn 7 bit adress into 8 bit address
     uint16_t address = BOARD_ADDRESSES[board] << 1;
 
     uint8_t request = SENSOR_REQUEST;
 
     // Four sensors, two bytes each
     uint8_t rx_buffer[SENSORS_PER_BOARD * 2];
-
+    
     // Request sensor readings
+    // Transmit command
+    // parameters: 
+    //              pointer to a hal_i2c_handle_t
+    //              targeted board
+    //              transmited message
+    //              size of transmited messge
+    //              wait 20 milliseconds
+    // returns:
+    //              status of process
     HAL_StatusTypeDef status =
         HAL_I2C_Master_Transmit(
             &hi2c1,
@@ -177,6 +208,14 @@ HAL_StatusTypeDef Read_Sensors(uint8_t board)
     }
 
     // Receive sensor readings
+    // parameters: 
+    //              pointer to a hal_i2c_handle_t
+    //              targeted board
+    //              transmited message
+    //              size of transmited messge
+    //              wait 20 milliseconds
+    // returns:
+    //              status of process
     status = HAL_I2C_Master_Receive(
         &hi2c1,
         address,
@@ -208,6 +247,7 @@ HAL_StatusTypeDef Read_Sensors(uint8_t board)
 // CONTINUOUS SENSOR POLLING LOOP
 // =====================================
 
+// continuously checks sensor inputs
 void Poll_All_Sensors(void)
 {
     for (uint8_t board = 0;
@@ -215,14 +255,14 @@ void Poll_All_Sensors(void)
          board++)
     {
         // Service magnet commands between boards
+        // same if statement is in main loop for redundancy
         if (magnet_command_pending)
         {
             Process_Magnet_Command();
         }
 
         // Poll current board
-        HAL_StatusTypeDef status =
-            Read_Sensors(board);
+        HAL_StatusTypeDef status = Read_Sensors(board);
 
         if (status != HAL_OK)
         {
@@ -236,6 +276,7 @@ void Poll_All_Sensors(void)
 // EXTERNAL INTERRUPT CALLBACK
 // =====================================
 
+// this function is called whenever a GPIO EXTI interrupt reaches the HAL handler
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == COMMAND_Pin)
